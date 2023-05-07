@@ -1,0 +1,30 @@
+- tag: main_sequence
+    #log: 
+    #  level: 'error' # 日志级别。可选 `debug` `info` `warn` `error`。默认 `info`。
+    #  file: './Log_main_sequence.log'
+    type: sequence
+    args:
+      exec:
+        - if: #境内
+            - query_is_local_domain
+            - '!_query_is_common'
+          exec:
+            - forward_local
+            - _return
+
+        - if: #境外
+            - query_is_non_local_domain
+          exec:
+            - forward_remote
+            - _return
+        
+        - primary: #剩下的漏网之鱼
+            - forward_local
+            - if:
+                - "!response_has_local_ip"
+              exec:
+                - _drop_response # 丢弃结果
+          secondary:
+            - forward_remote
+          fast_fallback: 150
+          always_standby: true

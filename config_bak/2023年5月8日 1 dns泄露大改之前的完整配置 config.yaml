@@ -1,0 +1,273 @@
+log:
+  level: 'error'              # 日志级别。可选 `debug` `info` `warn` `error`。默认 `info`。
+  file: "./Log_Main_All.log"  # 全局日志
+
+plugin:
+  # ------------------------------ 1.41 无过滤 DNS ------------------------------
+  - tag: Global_DNS
+    type: server
+    args:
+      server:
+        - protocol: udp
+          addr: "192.168.1.41:53"
+      entry:
+        - _no_ecs
+        - _single_flight
+        #- _prefer_ipv4
+        - lazy_cache_41 # 缓存
+        - main_sequence # 请求器
+        - modify_ttl_300s
+      timeout: 10
+  #
+  - tag: lazy_cache_41
+    type: "cache"
+    args:
+      size: 51200
+      lazy_cache_ttl: 300
+      lazy_cache_reply_ttl: 300
+      cache_everything: true
+  #
+  #
+
+
+
+  # ------------------------------ 1.42 屏蔽ipv6 DNS ------------------------------
+  - tag: Global_DNS_block_ipv6
+    type: server
+    args:
+      server:
+        - protocol: udp
+          addr: "192.168.1.42:53"
+      entry:
+        - _no_ecs
+        - _single_flight
+        #- _prefer_ipv4
+        - lazy_cache_42 # 缓存
+        - main_sequence # 请求器
+        #
+        - if_and: # 屏蔽ipv6
+            - _qtype_AAAA
+          exec:
+            - _block_with_empty_response
+        #
+        - modify_ttl_300s
+      timeout: 10
+  #
+  - tag: lazy_cache_42
+    type: "cache"
+    args:
+      size: 51200
+      lazy_cache_ttl: 300
+      lazy_cache_reply_ttl: 300
+      cache_everything: true
+  #
+  #
+
+
+  # ------------------------------ 1.40 主力服务器 ipv4优先 屏蔽广告 ------------------------------
+  - tag: main_server
+    type: server
+    args:
+      entry:
+        - _no_ecs
+        - _single_flight
+        - _prefer_ipv4
+        #
+        - if: #强制境内 优先于广告规则
+            - Force_forward_local
+          exec:
+            - forward_local
+            - _return
+        #
+        - if: #强制境外 优先于广告规则
+            - Force_forward_remote
+          exec:
+            - forward_remote
+            - _return
+        #
+        - if: #屏蔽广告
+            - query_is_ad_domain
+          exec:
+            - _block_with_nxdomain
+            - _return
+        #
+        - main_lazy_cache   # 缓存
+        - main_sequence     # 请求器
+        - modify_ttl_300s   # 修改ttl
+      timeout: 10
+      server:
+        # 对内局域网
+        - protocol: udp
+          addr: "192.168.1.40:53"
+
+        # 对外TCP
+        - protocol: tcp
+          addr: "0.0.0.0:53153"
+        # 对外DOT
+        - protocol: 'dot'                                 # 必需。服务器协议。可以是 `udp`, `tcp`, `dot/tls`, `doh/https`, `http`。
+          addr: '0.0.0.0:53853'                           # 必需。服务器监听地址。省略 IP 会监听所有地址(包括 IPv6)。
+          idle_timeout: 10                                # 连接复用空连接超时时间。单位: 秒。默认: 10。
+          cert: '/usr/local/etc/xray/Acme_ADGC.crt'       # `dot`, `doh` 必需。PEM 格式的证书文件。
+          key:  '/usr/local/etc/xray/Acme_ADGC.key'       # `dot`, `doh` 必需。PEM 格式的密钥文件。
+        # 对外DOH
+        - protocol: 'doh'                                 # 必需。服务器协议。可以是 `udp`, `tcp`, `dot/tls`, `doh/https`, `http`。
+          addr: '0.0.0.0:53443'                           # 必需。服务器监听地址。省略 IP 会监听所有地址(包括 IPv6)。
+          idle_timeout: 10                                # 连接复用空连接超时时间。单位: 秒。默认: 10。
+          cert: '/usr/local/etc/xray/Acme_ADGC.crt'       # `dot`, `doh` 必需。PEM 格式的证书文件。
+          key:  '/usr/local/etc/xray/Acme_ADGC.key'       # `dot`, `doh` 必需。PEM 格式的密钥文件。
+          url_path: '/dns-query'                          # url 路径。适用于 `doh`, `http`。如果为空，则任意路径的请求都能被处理。
+          get_user_ip_from_header: 'X-Forwarded-For'      # 尝试从 HTTP 头获取用户 IP。适用于 `doh`, `http`。如果获取不到依旧使用来源 IP。
+  #
+  #
+  
+  - tag: main_lazy_cache # 缓存设置
+    #log: 
+    #  level: 'error' # 日志级别。可选 `debug` `info` `warn` `error`。默认 `info`。
+    #  file: './Log_lazy_cache.log'
+    type: "cache"
+    args:
+      size: 51200
+      lazy_cache_ttl: 300
+      lazy_cache_reply_ttl: 300
+      cache_everything: true
+
+  - tag: main_sequence
+    #log: 
+    #  level: 'error' # 日志级别。可选 `debug` `info` `warn` `error`。默认 `info`。
+    #  file: './Log_main_sequence.log'
+    type: sequence
+    args:
+      exec:
+        - if: #境内
+            - query_is_local_domain
+            - '!_query_is_common' # 经过测试这个可能造成DNS泄露
+          exec:
+            - forward_local
+            - _return
+
+        - if: #境外
+            - query_is_non_local_domain
+          exec:
+            - forward_remote
+            - _return
+        
+        - primary: #剩下的漏网之鱼 # 经过测试这个一定会造成DNS泄露
+            - forward_local
+            - if:
+                - "!response_has_local_ip"
+              exec:
+                - _drop_response # 丢弃结果
+          secondary:
+            - forward_remote
+          fast_fallback: 150
+          always_standby: true
+  
+  # 修改应答 ttl
+  - tag: 'modify_ttl_300s'
+    type: 'ttl'
+    args:
+      minimal_ttl: 300
+      maximum_ttl: 300
+
+  - tag: forward_local
+    #log: 
+    #  level: 'error' # 日志级别。可选 `debug` `info` `warn` `error`。默认 `info`。
+    #  file: './Log_forward_local.log'
+    type: fast_forward
+    args:      
+      upstream:
+        # 阿里 DOH
+        - addr: 'https://dns.alidns.com/dns-query'
+          enable_pipeline: true
+        # 腾讯 DOH
+        - addr: 'https://doh.pub/dns-query'
+          enable_pipeline: true
+        # 360 DOH
+        - addr: 'https://doh.360.cn/dns-query'
+          enable_pipeline: true
+
+  - tag: forward_remote
+    #log: 
+    #  level: 'error' # 日志级别。可选 `debug` `info` `warn` `error`。默认 `info`。
+    #  file: './Log_forward_remote.log'
+    type: fast_forward
+    args:      
+      upstream:
+        # Start Here
+        # 测试假地址
+        #- addr: 'https://111.111.111.111/dns-query'
+        #  dial_addr: '1.1.1.1:443'
+
+        # Cloudflare_DOH
+        - addr: 'https://1.1.1.1/dns-query'
+          socks5: '192.168.1.20:10800'
+          enable_pipeline: true
+        - addr: 'https://1.0.0.1/dns-query'
+          socks5: '192.168.1.20:10800'
+          enable_pipeline: true
+
+        # Google_DOH
+        - addr: 'https://8.8.8.8/dns-query'
+          socks5: '192.168.1.20:10800'
+          enable_pipeline: true
+        - addr: 'https://8.8.4.4/dns-query'
+          socks5: '192.168.1.20:10800'
+          enable_pipeline: true
+
+        # Cisco (OpenDNS) DOH
+        - addr: 'https://208.67.222.2/dns-query'
+          enable_pipeline: true
+        - addr: 'https://208.67.220.2/dns-query'
+          enable_pipeline: true
+
+        # ADG无过滤 H3
+        - addr: 'https://94.140.14.140/dns-query'
+          enable_http3: true
+        - addr: 'https://94.140.14.141/dns-query'
+          enable_http3: true        
+  
+  
+  # 定制规则文件
+  #
+  #
+  - tag: Force_forward_local # 强制境内
+    type: query_matcher
+    args:
+      domain:
+        - "ext:./Force_forward_local.txt"
+        #- "ext:./geosite.dat:msn@cn"
+
+  - tag: Force_forward_remote # 强制境外
+    type: query_matcher
+    args:
+      domain:
+        - "ext:./Force_forward_remote.txt"        
+        - "ext:./geosite.dat:google@cn"
+        - "ext:./geosite.dat:google-cn"
+        #- "ext:./geosite.dat:category-companies@cn"
+
+  - tag: query_is_local_domain #境内
+    type: query_matcher
+    args:
+      domain:
+        - "ext:./geosite.dat:geolocation-cn"
+
+  - tag: query_is_non_local_domain #境外
+    type: query_matcher
+    args:
+      domain:
+        - "ext:./geosite.dat:geolocation-!cn"
+
+  - tag: response_has_local_ip # 响应ip为境内
+    type: response_matcher
+    args:
+      ip:
+        - "ext:./geoip.dat:cn"
+
+  - tag: query_is_ad_domain # 广告和屏蔽
+    type: query_matcher
+    args:
+      domain:
+        #- "ext:./geosite.dat:category-ads"
+        - "ext:./geosite.dat:category-ads-all"
+        - "ext:./block_domain.txt"

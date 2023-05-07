@@ -1,0 +1,20 @@
+#- if: #境外
+        #    - query_is_non_local_domain
+        #    - '!_query_is_common' # 这个放在local可能造成DNS泄露,所以改放remote里
+        #  exec:
+        #    - forward_remote
+        #    - _return 
+
+        #####        
+        
+        # 漏网之鱼 先用本地解析如果不是CN的IP则在改成用远程解析 这个会造成DNS泄露
+        #- primary:
+        #    - forward_local
+        #    - if:
+        #        - "!response_has_local_ip"
+        #      exec:
+        #        - _drop_response # 丢弃结果
+        #  secondary:
+        #    - forward_remote
+        #  fast_fallback: 150
+        #  always_standby: true
